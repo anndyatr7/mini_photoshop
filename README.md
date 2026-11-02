@@ -35,5 +35,5 @@ Proyek ini dibangun menggunakan bahasa **Python** dan beberapa pustaka (*library
 
 1. **Clone repository ini (atau download sebagai ZIP):**
    ```bash
-   git clone [https://github.com/username-kamu/nama-repository.git](https://github.com/username-kamu/nama-repository.git)
-   cd nama-repository
+   git clone [https://github.com/anndyatr7/mini_photoshop.git](https://github.com/anndyatr7/mini_photoshop.git)
+   cd mini_photoshop
