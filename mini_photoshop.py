@@ -461,33 +461,50 @@ class MiniPhotoshop:
         self._apply_from_feature_base(cv2.bitwise_not)
         self._show_feature_message("Negative diterapkan otomatis.")
 
+    
+    
     def apply_mirroring(self):
         if not self._begin_feature("Mirroring"):
             return
+
         self._clear_dynamic_frame()
-        tk.Label(self.frame_dynamic, text="Pilih jenis mirroring:").pack(anchor=tk.W)
-        # Tidak ada opsi mirroring yang aktif secara default.
-        # Pengguna harus memilih jenis flip terlebih dahulu.
-        selected = tk.IntVar(value=-999)
 
-        def update():
-            value = selected.get()
-            if value not in (1, 0, -1):
-                return
-            self._apply_from_feature_base(
-                lambda image: cv2.flip(image, value)
-            )
+        tk.Label(
+            self.frame_dynamic,
+            text="Pilih Jenis Mirroring:"
+        ).pack(anchor=tk.W, padx=5, pady=5)
 
-        options = [
-            ("Flip Horizontal", 1),
-            ("Flip Vertikal", 0),
-            ("Flip Keduanya", -1),
-        ]
-        for label, value in options:
-            tk.Radiobutton(
-                self.frame_dynamic, text=label, variable=selected,
-                value=value, command=update
-            ).pack(anchor=tk.W, padx=8)
+        def process_mirror(flip_code):
+            # Ambil gambar hasil pengolahan terakhir
+            current_image = self.current_image.copy()
+
+            # Lakukan mirroring pada gambar aktif
+            flip_img = cv2.flip(current_image, flip_code)
+
+            # Simpan hasil sebagai gambar aktif terbaru
+            self.current_image = flip_img
+
+            # Perbarui tampilan gambar dan histogram
+            self._refresh_result()
+
+        tk.Button(
+            self.frame_dynamic,
+            text="Flip Horizontal",
+            command=lambda: process_mirror(1)
+        ).pack(anchor=tk.W, padx=10, pady=3)
+
+        tk.Button(
+            self.frame_dynamic,
+            text="Flip Vertikal",
+            command=lambda: process_mirror(0)
+        ).pack(anchor=tk.W, padx=10, pady=3)
+
+        tk.Button(
+            self.frame_dynamic,
+            text="Flip Keduanya",
+            command=lambda: process_mirror(-1)
+        ).pack(anchor=tk.W, padx=10, pady=3)
+
 
     def apply_sharpening(self):
         if not self._begin_feature("Sharpening"):
