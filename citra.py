@@ -329,10 +329,17 @@ class MiniPhotoshop:
         self._photos = {}
         self._pending_data = None
 
+        # Status webcam untuk mode Live Histogram
+        self.camera = None
+        self.camera_job = None
+        self.camera_active = False
+        self.camera_frame = None
+
         self._setup_style()
         self._build_menu()
         self._build_layout()
         self._show_empty_state()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
     # GUI
@@ -385,6 +392,9 @@ class MiniPhotoshop:
 
         file_menu = menu("File")
         file_menu.add_command(label="Buka Gambar", accelerator="Ctrl+O", command=self.open_file)
+        file_menu.add_command(label="Buka Kamera", command=self.start_camera)
+        file_menu.add_command(label="Capture Kamera", command=self.capture_camera)
+        file_menu.add_command(label="Stop Kamera", command=self.stop_camera)
         file_menu.add_command(label="Simpan Hasil", accelerator="Ctrl+S", command=self.save_file)
         file_menu.add_separator()
         file_menu.add_command(label="Keluar", command=self.root.quit)
@@ -411,6 +421,7 @@ class MiniPhotoshop:
         self.root.config(menu=menubar)
         self.root.bind("<Control-o>", lambda event: self.open_file())
         self.root.bind("<Control-s>", lambda event: self.save_file())
+        self.root.bind("<Control-Shift-C>", lambda event: self.start_camera())
         self.root.bind("<Control-z>", lambda event: self.undo())
         self.root.bind("<Control-y>", lambda event: self.redo())
         self.root.bind("<Control-Shift-Z>", lambda event: self.redo())
@@ -427,6 +438,9 @@ class MiniPhotoshop:
             ("Redo", self.redo, "TButton"),
             ("Undo", self.undo, "TButton"),
             ("Simpan Hasil", self.save_file, "TButton"),
+            ("Capture", self.capture_camera, "TButton"),
+            ("Stop Kamera", self.stop_camera, "TButton"),
+            ("Buka Kamera", self.start_camera, "TButton"),
             ("Buka Gambar", self.open_file, "Accent.TButton"),
         ):
             ttk.Button(toolbar, text=text, command=command, style=style).pack(
@@ -1004,8 +1018,12 @@ class MiniPhotoshop:
     # Data: histogram dan statistik
     # ------------------------------------------------------------------
     def _draw_histograms(self):
-        panels = ((self.ax_before, self.original_image, "Histogram BEFORE", BEFORE),
-                  (self.ax_after, self.current_image, "Histogram AFTER", AFTER))
+        if self.camera_active:
+            panels = ((self.ax_before, self.current_image, "LIVE HISTOGRAM RGB", AFTER),
+                      (self.ax_after, None, "LIVE CAMERA", BEFORE))
+        else:
+            panels = ((self.ax_before, self.original_image, "Histogram BEFORE", BEFORE),
+                      (self.ax_after, self.current_image, "Histogram AFTER", AFTER))
         peaks = []
         for ax, image, title, color in panels:
             ax.clear()
@@ -1124,9 +1142,157 @@ class MiniPhotoshop:
         self._pending_data = self.root.after(80, self._refresh_data)
 
     # ------------------------------------------------------------------
+    # Kamera: preview webcam dan Live Histogram
+    # ------------------------------------------------------------------
+    def start_camera(self):
+        """Membuka webcam laptop dan memperbarui preview serta histogram."""
+        if self.camera_active:
+            return
+
+        self.stop_camera()
+
+        try:
+            camera = cv2.VideoCapture(0, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(0)
+            if not camera.isOpened():
+                camera.release()
+                messagebox.showerror(
+                    "Kamera tidak tersedia",
+                    "Webcam tidak dapat dibuka. Periksa izin kamera atau aplikasi lain "
+                    "yang sedang menggunakan webcam."
+                )
+                return
+        except cv2.error as error:
+            messagebox.showerror("Kamera tidak tersedia", f"Gagal membuka webcam:\\n{error}")
+            return
+
+        self.camera = camera
+        self.camera_active = True
+        self.camera_frame = None
+
+        # Mulai sesi kamera sebagai sumber gambar baru.
+        self.filename = None
+        self.full_image = None
+        self.original_image = None
+        self.current_image = None
+        self.steps = []
+        self.active = None
+        self.undo_stack = []
+        self.redo_stack = []
+        self._cache = None
+        self.zoom, self.center = 1.0, [0.5, 0.5]
+        self.file_label.configure(text="Webcam laptop • LIVE")
+        self._refresh_steps_list()
+        self._update_buttons()
+        self._show_message("Kamera aktif. Histogram RGB diperbarui secara realtime.")
+
+        self._camera_update()
+
+    def _camera_update(self):
+        """Mengambil frame webcam dan memperbarui tampilan serta histogram."""
+        self.camera_job = None
+        if not self.camera_active or self.camera is None:
+            return
+
+        ok, frame = self.camera.read()
+        if not ok or frame is None:
+            self._show_message("Frame kamera tidak terbaca. Periksa koneksi webcam.")
+            self.camera_job = self.root.after(150, self._camera_update)
+            return
+
+        self.camera_frame = frame.copy()
+        height, width = frame.shape[:2]
+        longest = max(height, width)
+
+        if longest > PREVIEW_MAX:
+            factor = PREVIEW_MAX / longest
+            preview = cv2.resize(
+                frame,
+                (max(1, round(width * factor)), max(1, round(height * factor))),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            preview = frame.copy()
+
+        # Selama live, frame kamera menjadi sumber BEFORE dan AFTER.
+        # Setelah Capture, frame terakhir dipertahankan sebagai gambar biasa.
+        self.full_image = frame.copy()
+        self.original_image = preview
+        self.current_image = preview
+        self.scale = longest / max(preview.shape[:2])
+
+        self._render_views()
+        self._draw_histograms()
+
+        self.camera_job = self.root.after(100, self._camera_update)
+
+    def capture_camera(self):
+        """Menghentikan live preview dan mempertahankan frame terakhir untuk diedit."""
+        if not self.camera_active or self.camera_frame is None:
+            messagebox.showinfo("Capture Kamera", "Buka kamera terlebih dahulu.")
+            return
+
+        captured = self.camera_frame.copy()
+        self.stop_camera()
+
+        height, width = captured.shape[:2]
+        longest = max(height, width)
+        if longest > PREVIEW_MAX:
+            factor = PREVIEW_MAX / longest
+            preview = cv2.resize(
+                captured,
+                (max(1, round(width * factor)), max(1, round(height * factor))),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            preview = captured.copy()
+
+        self.filename = "webcam_capture.png"
+        self.full_image = captured
+        self.original_image = preview
+        self.current_image = preview
+        self.scale = longest / max(preview.shape[:2])
+        self.steps = []
+        self.active = None
+        self.undo_stack = []
+        self.redo_stack = []
+        self._cache = None
+        self.zoom, self.center = 1.0, [0.5, 0.5]
+
+        self.file_label.configure(text=f"Capture Webcam  ({width} x {height} px)")
+        self._refresh_steps_list()
+        self._update_buttons()
+        self._show_message("Capture berhasil. Gambar siap diproses.")
+        self._refresh_result()
+
+    def stop_camera(self):
+        """Menghentikan pembaruan webcam dan melepas perangkat kamera."""
+        self.camera_active = False
+
+        if self.camera_job is not None:
+            try:
+                self.root.after_cancel(self.camera_job)
+            except tk.TclError:
+                pass
+            self.camera_job = None
+
+        if self.camera is not None:
+            self.camera.release()
+            self.camera = None
+
+        if hasattr(self, "hist_canvas") and self.current_image is not None:
+            self._draw_histograms()
+
+    def _on_close(self):
+        self.stop_camera()
+        self.root.destroy()
+
+    # ------------------------------------------------------------------
     # File
     # ------------------------------------------------------------------
     def open_file(self):
+        if self.camera_active:
+            self.stop_camera()
+
         path = filedialog.askopenfilename(
             title="Pilih gambar",
             filetypes=[
